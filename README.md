@@ -133,6 +133,10 @@ The code lives in `src/`: one module per source (`knaben.rs`, `apibay.rs`, `torr
 `nyaa.rs`, `leetx.rs`), `aggregator.rs` merges them, `torbox.rs` talks to TorBox, `titledb.rs`
 matches title IDs, `cache.rs` is the SQLite store and `tinfoil.rs` is the HTTP server.
 
+## License
+
+[WTFPL](LICENSE): do what you want with it.
+
 ## Disclaimer
 
 AIOFoil is a search and download tool. You are responsible for what you download with it and for

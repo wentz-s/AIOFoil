@@ -3,6 +3,8 @@ name = "aiofoil"
 version = "0.1.0"
 edition = "2021"
 description = "AIOFoil: a Tinfoil shop for Switch games from public torrent indexes, downloaded through TorBox"
+license = "WTFPL"
+repository = "https://github.com/wentz-s/AIOFoil"
 
 [dependencies]
 reqwest = { version = "0.12", features = ["json", "multipart", "stream"] }

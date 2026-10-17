@@ -25,7 +25,7 @@ pub struct Config {
     pub torbox_api_key: Option<String>,
 
     /// Where to look for Switch torrents (comma-separated)
-    #[arg(long, value_enum, value_delimiter = ',', default_value = "knaben,apibay,torrents-csv,nyaa,1337x")]
+    #[arg(long, value_enum, value_delimiter = ',', default_value = "knaben,apibay,torrents-csv,nyaa,1337x,tgx")]
     pub sources: Vec<Source>,
 
     /// Knaben API URL

@@ -10,7 +10,10 @@ mod sources;
 mod tinfoil;
 mod titledb;
 mod torbox;
+mod tgx;
 mod torrents_csv;
+mod rar;
+mod zip;
 
 use clap::Parser;
 use tracing::{error, info, warn};

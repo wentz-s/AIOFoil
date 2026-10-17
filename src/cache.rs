@@ -14,12 +14,26 @@ pub struct Game {
     pub updated_at: i64,
 }
 
-/// A Switch file inside a torrent, as reported by TorBox
+/// An installable file in a torrent: loose, or stored inside one of its ZIPs or RARs
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TorrentFile {
+pub struct StoredFile {
     pub hash: String,
     pub name: String,
     pub size: u64,
+    /// The ZIP (or first RAR volume) in the torrent that holds this file, if any
+    pub archive: Option<String>,
+    /// ZIP only: offset of the file's local header within the ZIP
+    pub header_offset: Option<u64>,
+    /// RAR only: where the file's bytes are, in order, across the volumes
+    pub parts: Option<Vec<Part>>,
+}
+
+/// A stretch of a file's bytes inside one archive volume
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct Part {
+    pub volume: String,
+    pub offset: u64,
+    pub len: u64,
 }
 
 #[derive(Clone)]
@@ -82,6 +96,28 @@ impl Cache {
         )
         .execute(&pool)
         .await?;
+
+        // Added with ZIP support. The first time, unhide torrents that were hidden
+        // for having no loose NSP/NSZ/XCI, since ZIPs of them can now be used.
+        let added_zip_support = sqlx::query("ALTER TABLE files ADD COLUMN archive TEXT")
+            .execute(&pool)
+            .await
+            .is_ok();
+        if added_zip_support {
+            sqlx::query("ALTER TABLE files ADD COLUMN header_offset INTEGER")
+                .execute(&pool)
+                .await?;
+        }
+        // Added with RAR support; likewise unhide everything once
+        let added_rar_support = sqlx::query("ALTER TABLE files ADD COLUMN parts TEXT")
+            .execute(&pool)
+            .await
+            .is_ok();
+        if added_zip_support || added_rar_support {
+            sqlx::query("UPDATE games SET unusable = 0")
+                .execute(&pool)
+                .await?;
+        }
 
         Ok(Self { pool })
     }
@@ -146,7 +182,7 @@ impl Cache {
     }
 
     /// Replace the known file list of a torrent.
-    pub async fn set_files(&self, hash: &str, files: &[(String, u64)]) -> Result<(), sqlx::Error> {
+    pub async fn set_files(&self, hash: &str, files: &[StoredFile]) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
 
         sqlx::query("DELETE FROM files WHERE hash = ?")
@@ -154,11 +190,16 @@ impl Cache {
             .execute(&mut *tx)
             .await?;
 
-        for (name, size) in files {
-            sqlx::query("INSERT OR IGNORE INTO files (hash, name, size) VALUES (?, ?, ?)")
+        for file in files {
+            let parts = file.parts.as_ref().map(serde_json::to_string).transpose()
+                .map_err(|e| sqlx::Error::Encode(Box::new(e)))?;
+            sqlx::query("INSERT OR IGNORE INTO files (hash, name, size, archive, header_offset, parts) VALUES (?, ?, ?, ?, ?, ?)")
                 .bind(hash)
-                .bind(name)
-                .bind(*size as i64)
+                .bind(&file.name)
+                .bind(file.size as i64)
+                .bind(&file.archive)
+                .bind(file.header_offset.map(|o| o as i64))
+                .bind(parts)
                 .execute(&mut *tx)
                 .await?;
         }
@@ -184,33 +225,35 @@ impl Cache {
 
     /// Every known file, ordered by torrent then name. The position of a file
     /// within its torrent is its index in download URLs.
-    pub async fn get_all_files(&self) -> Result<Vec<TorrentFile>, sqlx::Error> {
-        let rows = sqlx::query("SELECT hash, name, size FROM files ORDER BY hash, name")
+    pub async fn get_all_files(&self) -> Result<Vec<StoredFile>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM files ORDER BY hash, name")
             .fetch_all(&self.pool)
             .await?;
 
-        rows.iter()
-            .map(|row| Ok(TorrentFile {
-                hash: row.try_get("hash")?,
-                name: row.try_get("name")?,
-                size: row.try_get::<i64, _>("size")? as u64,
-            }))
-            .collect()
+        rows.iter().map(Self::row_to_file).collect()
     }
 
-    pub async fn get_files(&self, hash: &str) -> Result<Vec<TorrentFile>, sqlx::Error> {
-        let rows = sqlx::query("SELECT hash, name, size FROM files WHERE hash = ? ORDER BY name")
+    pub async fn get_files(&self, hash: &str) -> Result<Vec<StoredFile>, sqlx::Error> {
+        let rows = sqlx::query("SELECT * FROM files WHERE hash = ? ORDER BY name")
             .bind(hash.to_uppercase())
             .fetch_all(&self.pool)
             .await?;
 
-        rows.iter()
-            .map(|row| Ok(TorrentFile {
-                hash: row.try_get("hash")?,
-                name: row.try_get("name")?,
-                size: row.try_get::<i64, _>("size")? as u64,
-            }))
-            .collect()
+        rows.iter().map(Self::row_to_file).collect()
+    }
+
+    fn row_to_file(row: &SqliteRow) -> Result<StoredFile, sqlx::Error> {
+        Ok(StoredFile {
+            hash: row.try_get("hash")?,
+            name: row.try_get("name")?,
+            size: row.try_get::<i64, _>("size")? as u64,
+            archive: row.try_get("archive")?,
+            header_offset: row.try_get::<Option<i64>, _>("header_offset")?.map(|o| o as u64),
+            parts: row.try_get::<Option<String>, _>("parts")?
+                .map(|json| serde_json::from_str(&json))
+                .transpose()
+                .map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
+        })
     }
 
     pub async fn get_page_hashes(&self) -> Result<std::collections::HashMap<String, String>, sqlx::Error> {

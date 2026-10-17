@@ -7,7 +7,7 @@ releases from public torrent indexes, tags them with title IDs, and downloads th
 ## How it works
 
 1. **Catalog.** Every few hours AIOFoil searches its sources for Switch torrents, drops look-alikes
-   (TV episodes, PC emulators, RAR/7z/ZIP archives), and stores the rest in a local SQLite cache.
+   (TV episodes, PC emulators, 7z archives), and stores the rest in a local SQLite cache.
 2. **Title IDs.** IDs come from the real file names inside each torrent (as reported by TorBox),
    from IDs in the torrent name, or by matching the name against
    [blawar/titledb](https://github.com/blawar/titledb).
@@ -15,6 +15,13 @@ releases from public torrent indexes, tags them with title IDs, and downloads th
    each DLC become separate entries in Tinfoil.
 4. **Downloads.** When you pick a file, AIOFoil adds the magnet to TorBox and streams the file from
    TorBox's CDN to the Switch, passing Tinfoil's range requests through.
+5. **ZIPs and RARs.** Torrents that hold archives instead of loose files work too. NSP/NSZ/XCI
+   files are encrypted, so they're almost always archived without compression. The first time
+   you pick such a torrent, AIOFoil reads the archive headers with a few small range requests
+   and lists every stored file inside as its own entry. Files are streamed straight out of the
+   archive, including RAR sets split into volumes (`.part1.rar`, `.part2.rar`, ... or `.rar`,
+   `.r00`, ...). RAR4 and RAR5 are supported; compressed, solid or password-protected archives,
+   and 7z, are not.
 
 ## Sources
 
@@ -25,6 +32,7 @@ releases from public torrent indexes, tags them with title IDs, and downloads th
 | `torrents-csv` | [torrents-csv.com](https://torrents-csv.com), torrents seen on the DHT |
 | `nyaa` | Nyaa's "Software - Games" category (mostly overlaps with Knaben) |
 | `1337x` | 1337x's Switch category, through [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) |
+| `tgx` | TorrentGalaxy's Games category (torrentgalaxy.one) |
 
 All sources are on by default. If one fails (for example FlareSolverr isn't running), AIOFoil logs a
 warning and carries on with the others.

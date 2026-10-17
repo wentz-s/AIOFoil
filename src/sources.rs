@@ -21,6 +21,8 @@ pub enum Source {
     /// 1337x, through FlareSolverr (--flaresolverr-url)
     #[value(name = "1337x")]
     Leetx,
+    /// TorrentGalaxy's Games category
+    Tgx,
 }
 
 /// One search result, whatever source it came from
@@ -82,12 +84,13 @@ pub fn looks_like_switch(title: &str, category_ids: &[u64]) -> bool {
         || lower.contains("for nintendo switch")
 }
 
-/// Titles like "Metroid Dread (NSP)(Base Game).rar" or "Tears of the Kingdom [XCI].7z":
-/// the torrent holds an archive, which Tinfoil can't install.
+/// Titles like "Tears of the Kingdom [XCI].7z": the torrent holds a 7z archive,
+/// which can't be streamed to Tinfoil (it's solid-compressed). ZIPs and RARs can,
+/// when their files are stored uncompressed, which is the norm.
 pub fn is_archive_title(title: &str) -> bool {
     title.to_lowercase()
         .split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|word| matches!(word, "7z" | "rar" | "zip"))
+        .any(|word| word == "7z")
 }
 
 /// "s02", "s01e04"
@@ -131,16 +134,42 @@ pub fn parse_size(text: &str) -> u64 {
     (number * multiplier) as u64
 }
 
-/// Decode the HTML/XML entities that show up in torrent titles.
+/// Decode the HTML/XML entities that show up in torrent titles, including
+/// numeric ones like "&#39;" and "&#x27;".
 pub fn html_unescape(text: &str) -> String {
-    text.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#34;", "\"")
-        .replace("&#39;", "'")
-        .replace("&#039;", "'")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let decoded = rest[1..].find(';').filter(|&end| end <= 10).and_then(|end| {
+            let entity = &rest[1..=end];
+            let c = match entity {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                _ => entity.strip_prefix('#').and_then(|num| match num.strip_prefix(['x', 'X']) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => num.parse().ok(),
+                }).and_then(char::from_u32),
+            }?;
+            Some((c, end + 2))
+        });
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn url_encode(s: &str) -> String {
@@ -178,9 +207,10 @@ mod tests {
     #[test]
     fn spots_archives() {
         assert!(is_archive_title("Tears of the Kingdom [XCI].7z"));
-        assert!(is_archive_title("Metroid Dread (NSP)(Base Game).rar"));
+        assert!(!is_archive_title("Metroid Dread (NSP)(Base Game).rar"));
         assert!(!is_archive_title("Super Mario Party [NSP + Update 1.0.1]"));
         assert!(!is_archive_title("[RARBG] something [NSP]"));
+        assert!(!is_archive_title("Super Smash Bros Ultimate [NSZ].zip"));
     }
 
     #[test]
@@ -195,6 +225,8 @@ mod tests {
     fn unescapes_titles() {
         assert_eq!(html_unescape("Mario &amp; Luigi &#34;RPG&#34;"), "Mario & Luigi \"RPG\"");
         assert_eq!(html_unescape("&amp;lt;"), "&lt;");
+        assert_eq!(html_unescape("Luigi&#x27;s Mansion 3 &#039;22"), "Luigi's Mansion 3 '22");
+        assert_eq!(html_unescape("Tom & Jerry &unknown; &"), "Tom & Jerry &unknown; &");
     }
 
     #[test]

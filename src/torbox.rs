@@ -1,11 +1,13 @@
-// TorBox API client - file lists for cached torrents, and magnet -> direct HTTP download link
+// TorBox API client - file lists for cached torrents, and magnet -> direct HTTP download links
+use reqwest::header::RANGE;
 use reqwest::multipart::Form;
-use reqwest::{Client, RequestBuilder};
+use reqwest::{Client, RequestBuilder, Response, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 const API_URL: &str = "https://api.torbox.app/v1/api";
 const SWITCH_EXTENSIONS: [&str; 4] = [".nsp", ".nsz", ".xci", ".xcz"];
+const CDN_ATTEMPTS: u32 = 5;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -35,11 +37,12 @@ struct Torrent {
     files: Vec<TorrentFile>,
 }
 
-#[derive(Debug, Deserialize)]
-struct TorrentFile {
-    id: u64,
-    name: String,
-    size: u64,
+/// A file in a torrent on TorBox
+#[derive(Debug, Deserialize, Clone)]
+pub struct TorrentFile {
+    pub id: u64,
+    pub name: String,
+    pub size: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,12 +59,10 @@ pub struct FileInfo {
 }
 
 pub enum Resolved {
-    /// Direct download link, plus every Switch file in the torrent
-    Ready { url: String, files: Vec<FileInfo> },
+    /// TorBox has the torrent; these are all its files
+    Ready { torrent_id: u64, files: Vec<TorrentFile> },
     /// TorBox is still fetching the torrent
     Pending { state: String, progress: f64 },
-    /// The torrent has no NSP/NSZ/XCI, usually because it's a RAR or 7z archive
-    NoSwitchFiles,
 }
 
 #[derive(Clone)]
@@ -97,10 +98,9 @@ impl TorBoxClient {
         Ok(response.data.unwrap_or_default())
     }
 
-    /// Add the magnet to TorBox (a no-op if it's already there) and return a
-    /// download link for `wanted` (a file name), or the largest Switch file if
-    /// `wanted` is None or not found.
-    pub async fn resolve(&self, magnet: &str, wanted: Option<&str>) -> Result<Resolved, Error> {
+    /// Add the magnet to TorBox (a no-op if it's already there) and list its files
+    /// once TorBox has it.
+    pub async fn resolve(&self, magnet: &str) -> Result<Resolved, Error> {
         let created: Created = self.call(
             self.client.post(format!("{API_URL}/torrents/createtorrent"))
                 .multipart(Form::new().text("magnet", magnet.to_string())),
@@ -120,31 +120,19 @@ impl TorBoxClient {
             return Ok(Resolved::Pending { state: torrent.download_state, progress: torrent.progress });
         }
 
-        let switch_files: Vec<&TorrentFile> = torrent.files.iter()
-            .filter(|f| is_switch_file(&f.name))
-            .collect();
+        Ok(Resolved::Ready { torrent_id, files: torrent.files })
+    }
 
-        let Some(file) = wanted
-            .and_then(|wanted| switch_files.iter().find(|f| base_name(&f.name) == base_name(wanted)))
-            .or_else(|| switch_files.iter().max_by_key(|f| f.size))
-        else {
-            return Ok(Resolved::NoSwitchFiles);
-        };
-
-        let url: String = self.call(
+    /// Direct download link for one file of a torrent in the account.
+    pub async fn download_link(&self, torrent_id: u64, file_id: u64) -> Result<String, Error> {
+        self.call(
             self.client.get(format!("{API_URL}/torrents/requestdl"))
                 .query(&[
                     ("token", self.api_key.clone()),
                     ("torrent_id", torrent_id.to_string()),
-                    ("file_id", file.id.to_string()),
+                    ("file_id", file_id.to_string()),
                 ]),
-        ).await?;
-
-        let files = switch_files.iter()
-            .map(|f| FileInfo { name: f.name.clone(), size: f.size })
-            .collect();
-
-        Ok(Resolved::Ready { url, files })
+        ).await
     }
 
     async fn call<T: DeserializeOwned>(&self, request: RequestBuilder) -> Result<T, Error> {
@@ -160,6 +148,35 @@ impl TorBoxClient {
         }
         response.data.ok_or_else(|| "TorBox returned no data".into())
     }
+}
+
+/// GET bytes `start..=end` of a file on TorBox's CDN. Links that were just issued
+/// sometimes answer 400 or 429 for a moment when many are requested in a row,
+/// so temporary errors are retried with a growing delay.
+pub async fn cdn_range(client: &Client, url: &str, start: u64, end: u64) -> Result<Response, Error> {
+    let mut delay = std::time::Duration::from_millis(500);
+    for attempt in 1..=CDN_ATTEMPTS {
+        let last_attempt = attempt == CDN_ATTEMPTS;
+        match client.get(url).header(RANGE, format!("bytes={start}-{end}")).send().await {
+            Ok(response) if response.status() == StatusCode::PARTIAL_CONTENT => return Ok(response),
+            Ok(response) if !last_attempt && is_temporary(response.status()) => {}
+            Ok(response) => return Err(format!("expected a partial response, got HTTP {}", response.status()).into()),
+            Err(e) if !last_attempt => tracing::debug!("TorBox CDN request failed, retrying: {}", e),
+            Err(e) => return Err(e.into()),
+        }
+        tokio::time::sleep(delay).await;
+        delay *= 2;
+    }
+    unreachable!("the last attempt always returns")
+}
+
+fn is_temporary(status: StatusCode) -> bool {
+    matches!(status, StatusCode::BAD_REQUEST | StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS)
+        || status.is_server_error()
+}
+
+pub fn is_zip_file(name: &str) -> bool {
+    name.to_lowercase().ends_with(".zip")
 }
 
 pub fn is_switch_file(name: &str) -> bool {

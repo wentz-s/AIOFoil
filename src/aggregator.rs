@@ -1,15 +1,17 @@
 // Aggregator - pulls Switch torrents from every enabled source into the cache,
 // tags them with title IDs, and fills in torrent file lists from TorBox
-use crate::cache::{Cache, Game};
+use crate::cache::{Cache, Game, StoredFile};
 use crate::config::Config;
 use crate::apibay::ApibayClient;
 use crate::knaben::KnabenClient;
 use crate::leetx::LeetxClient;
 use crate::nyaa::NyaaClient;
+use crate::rar::is_rar_volume;
 use crate::sources::{is_archive_title, magnet_for, Error, Hit, Source};
+use crate::tgx::TgxClient;
 use crate::torrents_csv::TorrentsCsvClient;
 use crate::titledb::{title_id_in, TitleDb};
-use crate::torbox::{base_name, is_switch_file, TorBoxClient};
+use crate::torbox::{base_name, is_switch_file, is_zip_file, TorBoxClient};
 use std::collections::{HashMap, HashSet};
 use tracing::{error, info, warn};
 
@@ -25,6 +27,7 @@ pub struct Aggregator {
     torrents_csv_client: TorrentsCsvClient,
     nyaa_client: NyaaClient,
     leetx_client: LeetxClient,
+    tgx_client: TgxClient,
     torbox_client: Option<TorBoxClient>,
 }
 
@@ -38,6 +41,7 @@ impl Aggregator {
             torrents_csv_client: TorrentsCsvClient::new(),
             nyaa_client: NyaaClient::new(),
             leetx_client: LeetxClient::new(config.flaresolverr_url.clone(), cache.clone()),
+            tgx_client: TgxClient::new(cache.clone()),
             torbox_client: config.torbox_api_key.clone().map(TorBoxClient::new),
         }
     }
@@ -54,6 +58,7 @@ impl Aggregator {
                 Source::TorrentsCsv => self.torrents_csv_client.fetch_switch().await.map_err(Error::from),
                 Source::Nyaa => self.nyaa_client.fetch_switch().await,
                 Source::Leetx => self.leetx_client.fetch_switch().await,
+                Source::Tgx => self.tgx_client.fetch_switch().await,
             };
             let hits = match hits {
                 Ok(hits) => hits,
@@ -91,7 +96,7 @@ impl Aggregator {
             self.cache.mark_unusable(&hit.hash).await?;
         }
         if !archives.is_empty() {
-            info!("Skipped {} torrents that are RAR/7z/ZIP archives", archives.len());
+            info!("Skipped {} torrents that are 7z archives", archives.len());
         }
 
         let games: Vec<Game> = hits.into_iter()
@@ -148,15 +153,24 @@ impl Aggregator {
         for batch in missing.chunks(CHECK_CACHED_BATCH) {
             for torrent in torbox.check_cached(batch).await? {
                 let hash = torrent.hash.to_uppercase();
-                let files: Vec<(String, u64)> = torrent.files.iter()
+                let files: Vec<StoredFile> = torrent.files.iter()
                     .filter(|f| is_switch_file(&f.name))
-                    .map(|f| (base_name(&f.name).to_string(), f.size))
+                    .map(|f| StoredFile {
+                        hash: hash.clone(),
+                        name: base_name(&f.name).to_string(),
+                        size: f.size,
+                        archive: None,
+                        header_offset: None,
+                        parts: None,
+                    })
                     .collect();
+                let has_archive = torrent.files.iter().any(|f| is_zip_file(&f.name) || is_rar_volume(&f.name));
                 if !files.is_empty() {
                     self.cache.set_files(&hash, &files).await?;
                     found += 1;
-                } else if !torrent.files.is_empty() {
-                    // Files, but nothing Tinfoil can install: archives, or not a Switch game
+                } else if !torrent.files.is_empty() && !has_archive {
+                    // Files, but nothing Tinfoil can install: 7z archives, or not a Switch game.
+                    // ZIPs and RARs are looked inside on first download instead.
                     self.cache.mark_unusable(&hash).await?;
                     unusable += 1;
                 }

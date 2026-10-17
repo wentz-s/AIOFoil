@@ -1,0 +1,23 @@
+# Build output
+/target
+
+# Secrets - API keys must never be committed
+.env
+.env.*
+torbox_key
+*.key
+
+# Local data: the game cache and downloaded title databases
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+titledb.json
+cnmts.json
+index.json
+
+# Editors and OS clutter
+.idea/
+.vscode/
+*.swp
+.DS_Store

@@ -51,6 +51,11 @@ pub struct Config {
     /// Cache database path
     #[arg(long, default_value = DEFAULT_CACHE_PATH)]
     pub cache_path: String,
+
+    /// Other Tinfoil shops to merge in, as a Tinfoil
+    /// locations.conf-style JSON list.
+    #[arg(long, env = "AIOFOIL_SHOPS")]
+    pub shops: Option<String>,
 }
 
 const DEFAULT_CACHE_PATH: &str = "~/.cache/aiofoil/games.db";
@@ -80,6 +85,11 @@ impl Config {
     /// Directory for the database and downloaded titledb
     pub fn cache_dir(&self) -> PathBuf {
         self.cache_file().parent().map(PathBuf::from).unwrap_or_default()
+    }
+
+    /// Shops file path with `~` expanded
+    pub fn shops_file(&self) -> Option<PathBuf> {
+        self.shops.as_deref().map(expand_home)
     }
 }
 

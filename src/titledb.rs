@@ -328,6 +328,13 @@ pub fn title_id_in(file_name: &str) -> Option<&str> {
         .find(|id| id.len() == 16 && id.starts_with("01") && id.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
+/// Version number from a file name like "Hades [01000D200AC0C000][v131072].nsp".
+pub fn version_in(file_name: &str) -> Option<u32> {
+    file_name.split('[')
+        .filter_map(|part| part.split(']').next()?.strip_prefix(['v', 'V']))
+        .find_map(|version| version.parse().ok())
+}
+
 /// Base game ID for an update (base + 0x800) or DLC (base + 0x1000 + n) ID.
 pub fn base_title_id(title_id: &str) -> Option<String> {
     let id = u64::from_str_radix(title_id, 16).ok()?;
@@ -445,6 +452,14 @@ mod tests {
         assert_eq!(title_id_in("Hades [01000D200AC0C000][v0].nsp"), Some("01000D200AC0C000"));
         assert_eq!(title_id_in("DQ III HD-2D v0 (01003E601E324000).xci"), Some("01003E601E324000"));
         assert_eq!(title_id_in("Hades [NSP][RUS].nsp"), None);
+    }
+
+    #[test]
+    fn finds_version_in_file_name() {
+        assert_eq!(version_in("Hades [01000D200AC0C000][v131072].nsp"), Some(131072));
+        assert_eq!(version_in("Balatro [0100CD801CE5E800][v720896][1.1.1].nsp"), Some(720896));
+        assert_eq!(version_in("Hades [01000D200AC0C000].nsp"), None);
+        assert_eq!(version_in("Game [vRUS].nsp"), None);
     }
 
     #[test]

@@ -6,6 +6,7 @@ mod config;
 mod knaben;
 mod leetx;
 mod nyaa;
+mod shops;
 mod sources;
 mod tinfoil;
 mod titledb;
@@ -50,7 +51,12 @@ async fn main() {
     let aggregator = aggregator::Aggregator::new(&config, &cache, &titledb);
     tokio::spawn(aggregator.run());
 
-    if let Err(e) = tinfoil::start_server(&config, &cache, &titledb).await {
+    let shop_files = shops::SharedShopFiles::default();
+    if let Some(path) = config.shops_file() {
+        tokio::spawn(shops::run(path, shop_files.clone()));
+    }
+
+    if let Err(e) = tinfoil::start_server(&config, &cache, &titledb, &shop_files).await {
         error!("Server failed: {}", e);
         std::process::exit(1);
     }

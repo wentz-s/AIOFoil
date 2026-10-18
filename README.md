@@ -37,6 +37,28 @@ releases from public torrent indexes, tags them with title IDs, and downloads th
 All sources are on by default. If one fails (for example FlareSolverr isn't running), AIOFoil logs a
 warning and carries on with the others.
 
+### Shops on your LAN
+
+AIOFoil can merge in other Tinfoil shops, such as your own shop on a
+homelab server or public shops. Point `--shops` at a file in Tinfoil's
+`locations.conf` format:
+
+```json
+[
+  {"url": "http://192.168.1.50:8000/", "title": "Homelab", "enabled": 1},
+  "https://aiofoil.example.com/"
+]
+```
+
+- All entries are used regardless of whether they point at a local network
+  address or a public URL.
+- Local paths (`sdmc:/`, ...) and disabled entries are skipped.
+- Their files are linked directly, so the Switch downloads straight from the shop.
+- A file is left out when TorBox already has the same title ID and version, or when an earlier
+  shop in the list has it.
+- Shops are read every 10 minutes, or every minute while one is failing. Plain JSON indexes and
+  their `directories` are supported; encrypted Tinfoil indexes and shops that need a login are not.
+
 ## Requirements
 
 - [Rust](https://rustup.rs/) 1.80 or newer
@@ -101,6 +123,7 @@ Every option can also be set with the environment variable shown.
 | `--refresh-hours` | | `6` | How often to refresh the game list |
 | `--flaresolverr-url` | `FLARESOLVERR_URL` | `http://localhost:8191/v1` | FlareSolverr API |
 | `--cache-path` | | `~/.cache/aiofoil/games.db` | Where the cache lives |
+| `--shops` | `AIOFOIL_SHOPS` | | File listing other shops on your LAN (see above) |
 
 Run `aiofoil --help` for the full list. Set `RUST_LOG=debug` for more detailed logs.
 
@@ -130,7 +153,7 @@ cargo test
 ```
 
 The code lives in `src/`: one module per source (`knaben.rs`, `apibay.rs`, `torrents_csv.rs`,
-`nyaa.rs`, `leetx.rs`), `aggregator.rs` merges them, `torbox.rs` talks to TorBox, `titledb.rs`
+`nyaa.rs`, `leetx.rs`, `tgx.rs`), `aggregator.rs` merges them, `shops.rs` reads shops on your LAN, `torbox.rs` talks to TorBox, `titledb.rs`
 matches title IDs, `cache.rs` is the SQLite store and `tinfoil.rs` is the HTTP server.
 
 ## License

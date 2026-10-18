@@ -2,7 +2,8 @@
 use crate::cache::{Cache, Game, StoredFile};
 use crate::config::Config;
 use crate::sources::Error;
-use crate::titledb::{title_id_in, SharedTitleDb};
+use crate::shops::SharedShopFiles;
+use crate::titledb::{title_id_in, version_in, SharedTitleDb};
 use crate::rar::{self, is_rar_volume, volume_key};
 use crate::torbox::{base_name, cdn_range, is_switch_file, is_zip_file, Resolved, TorBoxClient, TorrentFile};
 use crate::zip;
@@ -14,7 +15,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -59,12 +60,19 @@ struct AppState {
     // No overall timeout: a download can stream for as long as it takes
     cdn: reqwest::Client,
     titledb: SharedTitleDb,
+    shop_files: SharedShopFiles,
 }
 
-pub async fn start_server(config: &Config, cache: &Cache, titledb: &SharedTitleDb) -> std::io::Result<()> {
+pub async fn start_server(
+    config: &Config,
+    cache: &Cache,
+    titledb: &SharedTitleDb,
+    shop_files: &SharedShopFiles,
+) -> std::io::Result<()> {
     let state = AppState {
         cache: cache.clone(),
         titledb: titledb.clone(),
+        shop_files: shop_files.clone(),
         torbox: config.torbox_api_key.clone().map(TorBoxClient::new),
         public_url: config.public_url.as_ref().map(|u| u.trim_end_matches('/').to_string()),
         links: Arc::new(Mutex::new(HashMap::new())),
@@ -137,10 +145,13 @@ async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
 
     // Tinfoil takes the file name (and title ID) from the URL fragment
     let mut entries = Vec::new();
+    // Title ID + version of every file TorBox has, so shops don't list them again
+    let mut torbox_titles = HashSet::new();
     for game in &games {
         match files_by_hash.get(game.hash.as_str()) {
             // File list known: one entry per NSP/NSZ/XCI so updates and DLC show up too
             Some(torrent_files) => {
+                torbox_titles.extend(torrent_files.iter().filter_map(|f| title_key(&f.name)));
                 let largest = torrent_files.iter().map(|f| f.size).max();
                 for (i, file) in torrent_files.iter().enumerate() {
                     let mut name = sanitize(&file.name);
@@ -162,8 +173,24 @@ async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
             )),
         }
     }
+    let torrent_entries = entries.len();
 
-    let mut message = format!("AIOFoil: {} files from {} torrents", entries.len(), games.len());
+    // Files from other shops: linked directly, skipping what TorBox already has
+    // and repeats across shops (the first shop listed wins)
+    let shop_files = state.shop_files.read().unwrap().clone();
+    let mut shop_titles = HashSet::new();
+    for file in &shop_files {
+        let key = title_key(&file.name);
+        if key.as_ref().is_some_and(|key| torbox_titles.contains(key) || !shop_titles.insert(key.clone())) {
+            continue;
+        }
+        entries.push(entry(file.url.clone(), file.size, title_id_in(&file.name)));
+    }
+
+    let mut message = format!("AIOFoil: {} files from {} torrents", torrent_entries, games.len());
+    if entries.len() > torrent_entries {
+        message.push_str(&format!(", {} from other shops", entries.len() - torrent_entries));
+    }
     if state.torbox.is_none() {
         message.push_str("\nNo TorBox API key set - downloads won't work.");
     }
@@ -550,6 +577,14 @@ fn with_title_id(name: &str, title_id: &str) -> String {
 }
 
 /// Replace characters that would break the URL or the file name.
+/// What makes two files the same content: title ID and version. Base games
+/// without a version tag are taken as v0; other files need one to match.
+fn title_key(name: &str) -> Option<(String, u32)> {
+    let id = title_id_in(name)?.to_uppercase();
+    let version = version_in(name).or_else(|| id.ends_with("000").then_some(0))?;
+    Some((id, version))
+}
+
 fn sanitize(name: &str) -> String {
     let name: String = name.chars()
         .map(|c| if "/\\:*?\"<>|#%".contains(c) { '_' } else { c })
@@ -560,6 +595,16 @@ fn sanitize(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_files_by_title_and_version() {
+        let key = |id: &str, v| Some((id.to_string(), v));
+        assert_eq!(title_key("Hades [01000D200AC0C000][v0].nsp"), key("01000D200AC0C000", 0));
+        assert_eq!(title_key("Hades [01000d200ac0c000].nsp"), key("01000D200AC0C000", 0));
+        assert_eq!(title_key("Hades [01000D200AC0C800][v131072].nsp"), key("01000D200AC0C800", 131072));
+        assert_eq!(title_key("Hades Update [01000D200AC0C800].nsp"), None);
+        assert_eq!(title_key("Hades.nsp"), None);
+    }
 
     #[test]
     fn parses_ranges() {

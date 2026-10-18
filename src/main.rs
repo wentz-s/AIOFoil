@@ -46,10 +46,11 @@ async fn main() {
     }
 
     // Keep the game list fresh in the background; the server starts right away
-    let aggregator = aggregator::Aggregator::new(&config, &cache);
+    let titledb = titledb::SharedTitleDb::default();
+    let aggregator = aggregator::Aggregator::new(&config, &cache, &titledb);
     tokio::spawn(aggregator.run());
 
-    if let Err(e) = tinfoil::start_server(&config, &cache).await {
+    if let Err(e) = tinfoil::start_server(&config, &cache, &titledb).await {
         error!("Server failed: {}", e);
         std::process::exit(1);
     }

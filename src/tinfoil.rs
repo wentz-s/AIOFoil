@@ -2,7 +2,7 @@
 use crate::cache::{Cache, Game, StoredFile};
 use crate::config::Config;
 use crate::sources::Error;
-use crate::titledb::title_id_in;
+use crate::titledb::{title_id_in, SharedTitleDb};
 use crate::rar::{self, is_rar_volume, volume_key};
 use crate::torbox::{base_name, cdn_range, is_switch_file, is_zip_file, Resolved, TorBoxClient, TorrentFile};
 use crate::zip;
@@ -58,11 +58,13 @@ struct AppState {
     links: Arc<Mutex<HashMap<String, (Instant, Target)>>>,
     // No overall timeout: a download can stream for as long as it takes
     cdn: reqwest::Client,
+    titledb: SharedTitleDb,
 }
 
-pub async fn start_server(config: &Config, cache: &Cache) -> std::io::Result<()> {
+pub async fn start_server(config: &Config, cache: &Cache, titledb: &SharedTitleDb) -> std::io::Result<()> {
     let state = AppState {
         cache: cache.clone(),
+        titledb: titledb.clone(),
         torbox: config.torbox_api_key.clone().map(TorBoxClient::new),
         public_url: config.public_url.as_ref().map(|u| u.trim_end_matches('/').to_string()),
         links: Arc::new(Mutex::new(HashMap::new())),
@@ -123,6 +125,16 @@ async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
         files_by_hash.entry(&file.hash).or_default().push(file);
     }
 
+    // Shops like CyberFoil sort by an optional releaseDate (YYYYMMDD); Tinfoil ignores it
+    let titledb = state.titledb.get();
+    let entry = |url: String, size: u64, title_id: Option<&str>| {
+        let mut entry = serde_json::json!({ "url": url, "size": size });
+        if let Some(date) = title_id.zip(titledb).and_then(|(id, db)| db.release_date(id)) {
+            entry["releaseDate"] = date.into();
+        }
+        entry
+    };
+
     // Tinfoil takes the file name (and title ID) from the URL fragment
     let mut entries = Vec::new();
     for game in &games {
@@ -138,17 +150,16 @@ async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
                             name = with_title_id(&name, id);
                         }
                     }
-                    entries.push(serde_json::json!({
-                        "url": format!("{}/dl/{}/{}#{}", base_url, game.hash, i, name),
-                        "size": file.size,
-                    }));
+                    let url = format!("{}/dl/{}/{}#{}", base_url, game.hash, i, name);
+                    entries.push(entry(url, file.size, title_id_in(&name)));
                 }
             }
             // File list unknown until TorBox has the torrent: one entry for the whole thing
-            None => entries.push(serde_json::json!({
-                "url": format!("{}/dl/{}#{}", base_url, game.hash, torrent_file_name(game)),
-                "size": game.size,
-            })),
+            None => entries.push(entry(
+                format!("{}/dl/{}#{}", base_url, game.hash, torrent_file_name(game)),
+                game.size,
+                game.title_id.as_deref(),
+            )),
         }
     }
 

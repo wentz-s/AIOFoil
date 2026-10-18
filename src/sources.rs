@@ -150,6 +150,32 @@ pub fn html_unescape(text: &str) -> String {
                 "gt" => Some('>'),
                 "quot" => Some('"'),
                 "apos" => Some('\''),
+                "nbsp" => Some(' '),
+                "rsquo" | "lsquo" => Some('\''),
+                "rdquo" | "ldquo" => Some('"'),
+                "ndash" | "mdash" => Some('-'),
+                "hellip" => Some('…'),
+                "trade" => Some('™'),
+                "reg" => Some('®'),
+                "copy" => Some('©'),
+                "times" => Some('×'),
+                "eacute" => Some('é'),
+                "egrave" => Some('è'),
+                "ecirc" => Some('ê'),
+                "euml" => Some('ë'),
+                "aacute" => Some('á'),
+                "agrave" => Some('à'),
+                "acirc" => Some('â'),
+                "auml" => Some('ä'),
+                "iacute" => Some('í'),
+                "iuml" => Some('ï'),
+                "oacute" => Some('ó'),
+                "ocirc" => Some('ô'),
+                "ouml" => Some('ö'),
+                "uacute" => Some('ú'),
+                "uuml" => Some('ü'),
+                "ntilde" => Some('ñ'),
+                "ccedil" => Some('ç'),
                 _ => entity.strip_prefix('#').and_then(|num| match num.strip_prefix(['x', 'X']) {
                     Some(hex) => u32::from_str_radix(hex, 16).ok(),
                     None => num.parse().ok(),
@@ -226,6 +252,7 @@ mod tests {
         assert_eq!(html_unescape("Mario &amp; Luigi &#34;RPG&#34;"), "Mario & Luigi \"RPG\"");
         assert_eq!(html_unescape("&amp;lt;"), "&lt;");
         assert_eq!(html_unescape("Luigi&#x27;s Mansion 3 &#039;22"), "Luigi's Mansion 3 '22");
+        assert_eq!(html_unescape("Pok&eacute;mon Legends&trade;"), "Pokémon Legends™");
         assert_eq!(html_unescape("Tom & Jerry &unknown; &"), "Tom & Jerry &unknown; &");
     }
 

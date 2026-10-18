@@ -10,7 +10,7 @@ use crate::rar::is_rar_volume;
 use crate::sources::{is_archive_title, magnet_for, Error, Hit, Source};
 use crate::tgx::TgxClient;
 use crate::torrents_csv::TorrentsCsvClient;
-use crate::titledb::{title_id_in, TitleDb};
+use crate::titledb::{title_id_in, SharedTitleDb, TitleDb};
 use crate::torbox::{base_name, is_switch_file, is_zip_file, TorBoxClient};
 use std::collections::{HashMap, HashSet};
 use tracing::{error, info, warn};
@@ -29,10 +29,11 @@ pub struct Aggregator {
     leetx_client: LeetxClient,
     tgx_client: TgxClient,
     torbox_client: Option<TorBoxClient>,
+    titledb: SharedTitleDb,
 }
 
 impl Aggregator {
-    pub fn new(config: &Config, cache: &Cache) -> Self {
+    pub fn new(config: &Config, cache: &Cache, titledb: &SharedTitleDb) -> Self {
         Self {
             config: config.clone(),
             cache: cache.clone(),
@@ -43,6 +44,7 @@ impl Aggregator {
             leetx_client: LeetxClient::new(config.flaresolverr_url.clone(), cache.clone()),
             tgx_client: TgxClient::new(cache.clone()),
             torbox_client: config.torbox_api_key.clone().map(TorBoxClient::new),
+            titledb: titledb.clone(),
         }
     }
 
@@ -183,13 +185,13 @@ impl Aggregator {
 
     /// Refresh now, then every `refresh_hours`, forever.
     pub async fn run(self) {
-        let titledb = match TitleDb::load(&self.config.cache_dir()).await {
-            Ok(db) => Some(db),
-            Err(e) => {
-                warn!("titledb unavailable, games will only get title IDs from file names: {}", e);
-                None
+        match TitleDb::load(&self.config.cache_dir()).await {
+            Ok(db) => {
+                let _ = self.titledb.set(db);
             }
-        };
+            Err(e) => warn!("titledb unavailable, games will only get title IDs from file names: {}", e),
+        }
+        let titledb = self.titledb.get();
 
         let mut interval = tokio::time::interval(
             std::time::Duration::from_secs(self.config.refresh_hours.max(1) * 3600),
@@ -197,7 +199,7 @@ impl Aggregator {
         loop {
             interval.tick().await;
             info!("Refreshing game list...");
-            match self.refresh(titledb.as_ref()).await {
+            match self.refresh(titledb).await {
                 Ok(count) => info!("Cached {} games", count),
                 Err(e) => error!("Refresh failed: {}", e),
             }
